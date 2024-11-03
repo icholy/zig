@@ -376,12 +376,28 @@ pub fn fuzz(
             testing.allocator_instance = .{};
             defer if (testing.allocator_instance.deinit() == .leak) std.process.exit(1);
             log_err_count = 0;
-            testOne(input_ptr[0..input_len]) catch |err| switch (err) {
+            const input = input_ptr[0..input_len];
+            testOne(input) catch |err| switch (err) {
                 error.SkipZigTest => return,
                 else => {
                     std.debug.lockStdErr();
                     if (@errorReturnTrace()) |trace| std.debug.dumpStackTrace(trace.*);
                     std.debug.print("failed with error.{s}\n", .{@errorName(err)});
+                    if (options.corpusDir) |corpusDir| {
+                        const input_hash: [std.crypto.hash.Sha1.digest_length]u8 = undefined;
+                        std.crypto.hash.Sha1.hash(input, input_hash, .{});
+                        const input_name = input_hash ++ ".input";
+                        corpusDir.writeFile(.{
+                            .sub_path = input_name,
+                            .data = input,
+                            .flags = .{ .exclusive = true },
+                        }) catch |e| switch (e) {
+                            error.PathAlreadyExists => {},
+                            else => {
+                                std.debug.print("failed to write {s}, with error.{s}", .{ input_name, @errorName(e) });
+                            },
+                        };
+                    }
                     std.process.exit(1);
                 },
             };
@@ -398,6 +414,20 @@ pub fn fuzz(
         fuzzer_start(&global.fuzzer_one);
         testing.allocator_instance = prev_allocator_state;
         return;
+    }
+
+    // read the corpus directory
+    if (options.corpusDir) |corpusDir| {
+        var dir = try corpusDir.openDir(".", .{ .iterate = true });
+        defer dir.close();
+        var iter = dir.iterate();
+        while (try iter.next()) |entry| {
+            if (entry.kind == .file and std.mem.endsWith(u8, entry.name, ".input")) {
+                const input = try corpusDir.readFileAlloc(testing.allocator, entry.name, std.math.maxInt(usize));
+                defer testing.allocator.free(input);
+                try testOne(input);
+            }
+        }
     }
 
     // When the unit test executable is not built in fuzz mode, only run the
