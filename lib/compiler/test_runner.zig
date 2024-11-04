@@ -376,12 +376,19 @@ pub fn fuzz(
             testing.allocator_instance = .{};
             defer if (testing.allocator_instance.deinit() == .leak) std.process.exit(1);
             log_err_count = 0;
-            testOne(input_ptr[0..input_len]) catch |err| switch (err) {
+            const input = input_ptr[0..input_len];
+            testOne(input) catch |err| switch (err) {
                 error.SkipZigTest => return,
                 else => {
                     std.debug.lockStdErr();
                     if (@errorReturnTrace()) |trace| std.debug.dumpStackTrace(trace.*);
-                    std.debug.print("failed with error.{s}\n", .{@errorName(err)});
+                    var input_hash: [std.crypto.hash.Sha1.digest_length]u8 = undefined;
+                    std.crypto.hash.Sha1.hash(input, &input_hash, .{});
+                    const input_filename = std.fmt.bytesToHex(input_hash, .lower) ++ ".fuzz";
+                    std.debug.print("failed with error.{s}, writing input to: {s}\n", .{ @errorName(err), input_filename });
+                    std.fs.cwd().writeFile(.{ .sub_path = input_filename, .data = input }) catch |e| {
+                        std.debug.print("failed to write file with error.{s}\n", .{@errorName(e)});
+                    };
                     std.process.exit(1);
                 },
             };
